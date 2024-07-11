@@ -1,83 +1,74 @@
 import streamlit as st
 import requests
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Função para formatar preço em reais
+# Função para formatar preço em reais (se necessário)
 def formatar_preco_reais(valor):
     if valor is None:
         return 'Preço não disponível'
     else:
         return f'{valor:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
-        # return f'R$ {valor:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
 
-# URLs atualizadas
-consultarItemMaterial_base_url = 'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco/1_consultarMaterial'
-consultarItemServico_base_url = 'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco/3_consultarServico'
+# URL fornecida
+url = "http://compras.dados.gov.br/licitacoes/v1/orgaos.json?nome=turismo"
 
-def obter_itens(tipo_item, codigo_item_catalogo, pagina, tamanho_pagina):
-    url = consultarItemMaterial_base_url if tipo_item == 'Material' else consultarItemServico_base_url
-    params = {
-        'pagina': pagina,
-        'tamanhoPagina':tamanho_pagina,  # Ajuste para 500 itens por página
-        'codigoItemCatalogo': codigo_item_catalogo
-    }
+def obter_dados():
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url)
         if response.status_code == 200:
-            json_response = response.json()
-            itens = json_response.get('resultado', [])
-            paginas_restantes = json_response.get('paginasRestantes', 0)
-            total_paginas = json_response.get('totalPaginas', 0)
-            return itens, paginas_restantes, total_paginas
+            data = response.json()
+            if '_embedded' in data and 'orgao' in data['_embedded']:
+                return data['_embedded']['orgao']
+            else:
+                st.error("Nenhum dado 'orgao' encontrado na resposta.")
+                st.json(data)  # Exibir a resposta para inspeção
+                return []
         else:
-            st.error(f"Erro na consulta: {response.status_code}")
-            return [], 0
+            st.error(f"Erro na requisição: {response.status_code}")
+            st.text(response.text)  # Exibir a resposta bruta para ver o que foi retornado
+            return []
     except Exception as e:
         st.error(f"Erro ao realizar a requisição: {str(e)}")
-        return [], 0
+        return []
 
 # Streamlit UI
-st.title("PESQUISA DE PREÇOS DE MATERIAIS E/OU SERVIÇOS")    
-
-# Disclaimer
-st.markdown("Localize o código do material ou serviço de forma simples e rápida. https://catalogo.compras.gov.br/cnbs-web/busca")
-
-tipo_item = st.selectbox("Selecione o tipo de item para consulta", ['Material', 'Serviço'], key='tipo_item')
-codigo_item_catalogo = st.text_input("Código do Item de Catálogo", value="", key='codigo_item_catalogo')
-pagina = st.number_input("Indique a página para consulta", min_value=1, value=1, step=1)
-tamanho_pagina = st.number_input("Indique o tamanho da página para consulta", min_value=10, value=500, step=1)
+st.title("Consulta de Órgãos de Turismo")
 
 if st.button('Consultar'):
-    if codigo_item_catalogo:  # Verifica se o código do item de catálogo não está vazio
-        itens, paginas_restantes, total_paginas = obter_itens(tipo_item, codigo_item_catalogo, pagina, tamanho_pagina)
-        if itens:  # Ensure 'itens' is not empty before proceeding
-            st.session_state['itens'] = itens
-            st.session_state['paginas_restantes'] = paginas_restantes
-            st.session_state['total_paginas'] = total_paginas
-            st.write(f"Total de páginas: {total_paginas}")
-            st.write(f"Páginas restantes: {paginas_restantes}")            
-        else:
-            st.error("Nenhum item encontrado. Por favor, tente com um código diferente ou verifique a conexão com a API.")
+    orgaos = obter_dados()
+    if orgaos:
+        # Converter lista de órgãos em DataFrame do pandas
+        df = pd.DataFrame(orgaos)
+        
+        # Exibir as primeiras linhas do DataFrame
+        st.write("Dados Brutos:")
+        st.dataframe(df.head())
+        
+        # Exemplo de filtragem de dados (ex.: órgãos com nome contendo "Turismo")
+        df_filtered = df[df['nome'].str.contains("Turismo", case=False)]
+        
+        # Exibir os dados filtrados
+        st.write("Dados Filtrados:")
+        st.dataframe(df_filtered)
+        
+        # Visualização dos dados (ex.: contagem de órgãos por tipo)
+        st.write("Visualização dos Dados:")
+        plt.figure(figsize=(10, 6))
+        sns.countplot(y='nome', data=df_filtered, palette='viridis')
+        plt.title('Órgãos com Nome Contendo "Turismo"')
+        plt.xlabel('Contagem')
+        plt.ylabel('Nome do Órgão')
+        st.pyplot(plt)
+        
+        # Download dos dados filtrados
+        csv = df_filtered.to_csv(sep=';', index=False).encode('utf-8')
+        st.download_button(
+            label="Download dos dados filtrados em CSV",
+            data=csv,
+            file_name='dados_filtrados.csv',
+            mime='text/csv',
+        )
     else:
-        st.warning("Por favor, informe o código do item de catálogo para realizar a consulta.")
-
-    if st.session_state.get('itens'):
-        try:
-            # Ensure 'itens' is in the expected format before normalization
-            if isinstance(st.session_state['itens'], list) and all(isinstance(item, dict) for item in st.session_state['itens']):
-                df_completo = pd.json_normalize(st.session_state['itens'])
-                # Apply formatting
-                df_completo = df_completo.applymap(lambda x: formatar_preco_reais(x) if isinstance(x, float) else x)
-                                
-                csv = df_completo.to_csv(sep=';', index=False).encode('utf-8')
-                st.download_button(
-                    label="Download dos dados em CSV",
-                    data=csv,
-                    file_name='dados_consulta.csv',
-                    mime='text/csv',
-                )              
-                         
-            else:
-                st.error("Formato dos itens inválido para normalização.")
-        except Exception as e:
-            st.error(f"Erro ao processar os itens: {str(e)}")
+        st.warning("Nenhum dado encontrado. Por favor, tente novamente mais tarde.")
